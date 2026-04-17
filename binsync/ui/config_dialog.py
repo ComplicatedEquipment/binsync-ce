@@ -297,9 +297,11 @@ class ConfigureBSDialog(QDialog):
         self._prev_proj_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._prev_proj_table.verticalHeader().setVisible(False)
         self._prev_proj_table.horizontalHeader().setVisible(False)
-        self._prev_proj_table.setMaximumHeight(50)
+        self._prev_proj_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._prev_proj_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self._prev_proj_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._prev_proj_table.itemDoubleClicked.connect(self._handle_prev_proj_double_click)
+        self._resize_prev_proj_table()
         prev_proj_layout.addWidget(self._prev_proj_table)
 
         # buttons
@@ -327,6 +329,7 @@ class ConfigureBSDialog(QDialog):
         if top_confs is None:
             self._prev_proj_table.setRowCount(1)
             self._prev_proj_table.setColumnCount(1)
+            self._resize_prev_proj_table()
             return
 
         self._prev_proj_table.setRowCount(len(top_confs))
@@ -335,6 +338,21 @@ class ConfigureBSDialog(QDialog):
         for i, top_conf in enumerate(top_confs):
             self._prev_proj_table.setItem(i, 0, QTableWidgetItem(top_conf))
             self._prev_proj_table.selectRow(0)
+
+        self._resize_prev_proj_table()
+
+    def _resize_prev_proj_table(self):
+        row_count = max(1, self._prev_proj_table.rowCount())
+        visible_rows = min(row_count, 4)
+
+        self._prev_proj_table.resizeRowsToContents()
+
+        frame_height = self._prev_proj_table.frameWidth() * 2
+        row_heights = sum(self._prev_proj_table.rowHeight(i) for i in range(visible_rows))
+        table_height = frame_height + row_heights
+
+        self._prev_proj_table.setMinimumHeight(table_height)
+        self._prev_proj_table.setMaximumHeight(table_height)
 
     def _get_selected_config_row(self):
         items = self._prev_proj_table.selectedItems()

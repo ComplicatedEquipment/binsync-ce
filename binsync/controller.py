@@ -1138,15 +1138,52 @@ class BSController:
         @param lookup_item:
         @return: Success of committing the Artifact
         """
+        def _normalize_type_name(name_obj):
+            if isinstance(name_obj, str):
+                return name_obj
+
+            name_parts = getattr(name_obj, "name", None)
+            if isinstance(name_parts, (list, tuple)):
+                return "::".join(str(part) for part in name_parts)
+
+            return str(name_obj)
+
         master_state: State = self.client.master_state
         committed = 0
-        for lookup_key in lookup_items:
-            if isinstance(lookup_key, int):
+        for lookup_item in lookup_items:
+            artifact_type = None
+            lookup_key = lookup_item
+            if isinstance(lookup_item, tuple) and len(lookup_item) == 2:
+                artifact_type, lookup_key = lookup_item
+
+            if artifact_type == "Variable" or isinstance(lookup_key, int):
                 art = self.deci.global_vars[lookup_key]
-                master_state.global_vars[art.addr] = art
+                master_state.set_global_var(art)
+            elif artifact_type == "Struct":
+                art = self.deci._get_struct(lookup_key)
+                if art is None:
+                    raise KeyError(lookup_key)
+
+                art.name = _normalize_type_name(art.name)
+                master_state.set_struct(art)
+            elif artifact_type == "Enum":
+                art = self.deci._get_enum(lookup_key)
+                if art is None:
+                    raise KeyError(lookup_key)
+
+                art.name = _normalize_type_name(art.name)
+                master_state.set_enum(art)
+            elif artifact_type == "Typedef":
+                art = self.deci._get_typedef(lookup_key)
+                if art is None:
+                    raise KeyError(lookup_key)
+
+                art.name = _normalize_type_name(art.name)
+                art.type = _normalize_type_name(art.type)
+                master_state.set_typedef(art)
             else:
                 art = None
-                # structs always first
+                # legacy path for older callers without explicit type information
                 try:
                     art = self.deci.structs[lookup_key]
                     master_state.structs[lookup_key] = art
@@ -1154,7 +1191,10 @@ class BSController:
                     pass
 
                 if art is None:
-                    master_state.enums[lookup_key] = self.deci.enums[lookup_key]
+                    try:
+                        master_state.enums[lookup_key] = self.deci.enums[lookup_key]
+                    except KeyError:
+                        master_state.typedefs[lookup_key] = self.deci.typedefs[lookup_key]
             committed += 1
 
         master_state.last_commit_msg = f"Force pushed {committed} global artifacts"

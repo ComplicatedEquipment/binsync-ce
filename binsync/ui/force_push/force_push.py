@@ -16,6 +16,9 @@ l = logging.getLogger(__name__)
 
 class ForcePushUI(QWidget):
     update_ready = Signal()
+    DEFAULT_WIDTH = 600
+    DEFAULT_HEIGHT = 800
+
     def __init__(self, controller, parent=None):
         super(ForcePushUI, self).__init__(parent)
         self.controller = controller
@@ -25,6 +28,9 @@ class ForcePushUI(QWidget):
         self._update_table_data()
 
     def _init_widgets(self):
+        self.setWindowTitle("BinSync Force Push")
+        self.setMinimumSize(self.DEFAULT_WIDTH, self.DEFAULT_HEIGHT)
+
         # tabs for panel_tabs
         self.tabView = QTabWidget()
         self.tabView.setContentsMargins(0, 0, 0, 0)
@@ -67,6 +73,7 @@ class ForcePushUI(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
 
         self.setLayout(main_layout)
+        self.resize(self.DEFAULT_WIDTH, self.DEFAULT_HEIGHT)
 
     def _exclude_defaults_changed(self, state):
         self._func_table.table.model.exclude_defaults = bool(state)

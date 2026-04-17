@@ -3,6 +3,7 @@ import os
 import pathlib
 import datetime
 import re
+import hashlib
 from functools import wraps
 from typing import Dict, Optional, Union, List
 import copy
@@ -52,6 +53,22 @@ def sanitize_name(unsafe_name: str) -> str:
     This should always be used when creating files from named C-like objects in the decompiler, like structs.
     """
     return re.sub(r"[^a-zA-Z0-9_]", "_", unsafe_name)
+
+
+def struct_filename(name: str, max_stem_len: int = 96) -> str:
+    """
+    Generate a filesystem-safe struct filename stem.
+
+    Keep existing readable sanitized names for normal cases, but shorten pathological
+    names on Windows by truncating and appending a stable hash suffix.
+    """
+    safe_name = sanitize_name(name)
+    if len(safe_name) <= max_stem_len:
+        return safe_name
+
+    digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:12]
+    prefix_len = max_stem_len - len(digest) - 1
+    return f"{safe_name[:prefix_len]}_{digest}"
 
 
 def update_dirty_flag(f):
@@ -290,13 +307,13 @@ class State:
 
         # dump structs, one file per struct in ./structs/
         for s_name, struct in self.structs.items():
-            safe_name = sanitize_name(s_name)
+            safe_name = struct_filename(s_name)
             path = pathlib.Path('structs').joinpath(f"{safe_name}.toml")
             self._dump_data(dst, path, struct.dumps(fmt=ArtifactFormat.TOML).encode())
 
         structs_folder = (dump_root / "structs")
         if structs_folder.exists():
-            sanitized_struct_names = set([sanitize_name(s_name) for s_name in self.structs.keys()])
+            sanitized_struct_names = {struct_filename(s_name) for s_name in self.structs.keys()}
             for path in structs_folder.iterdir():
                 file = path.stem
                 name = file.split(".")[0]

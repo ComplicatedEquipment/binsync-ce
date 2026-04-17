@@ -3,8 +3,9 @@ from typing import Dict, Set
 
 
 from binsync.controller import BSController
-from binsync.ui.panel_tabs.table_model import BinsyncTableModel, BinsyncTableFilterLineEdit, BinsyncTableView
+from .table_model import BinsyncTableModel, BinsyncTableFilterLineEdit, BinsyncTableView
 from libbs.ui.qt_objects import (
+    QApplication,
     QWidget,
     QVBoxLayout,
     Qt,
@@ -26,11 +27,15 @@ class GlobalTableModel(BinsyncTableModel):
         self.data_dict = {}
         self.checks = {}
 
+    @staticmethod
+    def _lookup_key_for_row(row):
+        return row[3]
+
     def checkState(self, index):
-        return Qt.Checked if self.checks[self.row_data[index.row()][0]] else Qt.Unchecked
+        return Qt.Checked if self.checks[self._lookup_key_for_row(self.row_data[index.row()])] else Qt.Unchecked
 
     def checkStateBool(self, index):
-        return True if self.checks[self.row_data[index.row()][0]] else False
+        return True if self.checks[self._lookup_key_for_row(self.row_data[index.row()])] else False
 
     def data(self, index, role=Qt.DisplayRole):
         if not index.isValid():
@@ -60,9 +65,34 @@ class GlobalTableModel(BinsyncTableModel):
         return None
 
     def setAllCheckStates(self, val):
-        for k,v in self.checks.items():
-            self.checks[k] = val
-        self.dataChanged.emit(self.index(0, 0), self.index(self.rowCount() - 1, 0))
+        changed_keys = [key for key, checked in self.checks.items() if checked != val]
+        for key in changed_keys:
+            self.checks[key] = val
+
+        if changed_keys and self.rowCount():
+            self.dataChanged.emit(self.index(0, 0), self.index(self.rowCount() - 1, 0), [Qt.CheckStateRole])
+
+    def setCheckStatesForIndexes(self, indexes, value):
+        changed_rows = []
+        seen_rows = set()
+        for index in indexes:
+            if not index.isValid() or index.row() in seen_rows:
+                continue
+
+            row = index.row()
+            seen_rows.add(row)
+            key = self._lookup_key_for_row(self.row_data[row])
+            if self.checks.get(key) == value:
+                continue
+
+            self.checks[key] = value
+            changed_rows.append(row)
+
+        if not changed_rows:
+            return False
+
+        self.dataChanged.emit(self.index(min(changed_rows), 0), self.index(max(changed_rows), 0), [Qt.CheckStateRole])
+        return True
 
 
     def setData(self, index, value, role=Qt.EditRole):
@@ -71,7 +101,7 @@ class GlobalTableModel(BinsyncTableModel):
         if index.isValid() and 0 <= index.row() < len(self.row_data):
             rowdata = self.row_data[index.row()]
             if role == Qt.CheckStateRole:
-                self.checks[rowdata[0]] = value
+                self.checks[self._lookup_key_for_row(rowdata)] = value
             elif 0 <= index.column() < len(rowdata):
                 rowdata[index.column()] = value
             else:
@@ -86,19 +116,18 @@ class GlobalTableModel(BinsyncTableModel):
         decompiler_gvars = self.controller.deci.global_vars
         decompiler_enums = self.controller.deci.enums
         decompiler_typedefs = self.controller.deci.typedefs
-        self.gvar_name_to_addr_map = {gvar.name: addr for addr, gvar in decompiler_gvars.items()}
         all_artifacts = [(decompiler_structs, "Struct"), (decompiler_gvars, "Variable"), (decompiler_enums, "Enum"), (decompiler_typedefs, "Typedef")]
         for type_artifacts, type_ in all_artifacts:
             self.controller.deci.info(f"Collecting {type_} artifacts...")
-            for _, artifact in type_artifacts.items():
+            for lookup_key, artifact in type_artifacts.items():
                 if type_ == "Struct" or type_ == "Enum" or type_ == "Typedef":
-                    self.data_dict[artifact.name] = [artifact.name, "", type_]
-                    self.checks[artifact.name] = False
-                    updated_row_keys.add(artifact.name)
+                    self.data_dict[lookup_key] = [artifact.name, "", type_, lookup_key]
+                    self.checks[lookup_key] = False
+                    updated_row_keys.add(lookup_key)
                 else:
-                    self.data_dict[artifact.addr] = [artifact.addr, artifact.name, type_]
-                    self.checks[artifact.addr] = False
-                    updated_row_keys.add(artifact.addr)
+                    self.data_dict[lookup_key] = [artifact.addr, artifact.name, type_, lookup_key]
+                    self.checks[lookup_key] = False
+                    updated_row_keys.add(lookup_key)
         self._update_changed_rows(self.data_dict, updated_row_keys)
 
     @Slot(list)
@@ -167,33 +196,16 @@ class GlobalsTableView(BinsyncTableView):
     def update_table(self):
         self.model.update_table()
 
-    def _lookup_addr_for_gvar(self, name):
-        return self.model.gvar_name_to_addr_map[name]
-
     def push(self):
+        checked_indexes = self._checked_source_indexes(check_column=2)
         artifacts_to_push = []
-        first_state_obj = self.model.checkState(
-            self.proxymodel.mapToSource(self.proxymodel.index(0, 0, QModelIndex()))
-        )
-        check_has_value = hasattr(first_state_obj, "value")
-
-        self.proxymodel.setFilterFixedString("")
-        for i in range(self.proxymodel.rowCount()):
-            proxyIndex = self.proxymodel.index(i, 2, QModelIndex())
-            mappedIndex = self.proxymodel.mapToSource(proxyIndex)
-            model_state = self.model.checkState(mappedIndex)
-            is_checked = model_state.value if check_has_value else model_state
-            if is_checked:
-                type_ = self.model.data(mappedIndex)
-                if type_ == "Variable":
-                    name = self.model.data(mappedIndex.sibling(mappedIndex.row(), 1))
-                else:
-                    name = self.model.data(mappedIndex.sibling(mappedIndex.row(), 0))
-                lookup_item = self._lookup_addr_for_gvar(name) if type_ == "Variable" else name
-
-                artifacts_to_push.append(lookup_item)
+        for mapped_index in checked_indexes:
+            type_ = self.model.data(mapped_index)
+            lookup_item = self.model.row_data[mapped_index.row()][3]
+            artifacts_to_push.append((type_, lookup_item))
 
         self.controller.force_push_global_artifacts(artifacts_to_push)
+        self._clear_checked_source_indexes(checked_indexes)
 
     def check_all(self):
         self.model.setAllCheckStates(True)
@@ -202,13 +214,7 @@ class GlobalsTableView(BinsyncTableView):
         self.model.setAllCheckStates(False)
 
     def _doubleclick_handler(self):
-        """ Handler for double clicking on a row, jumps to the respective function. """
-        if self.model.addr_col is None:
-            return
-        row_idx = self.selectionModel().selectedIndexes()[0]
-        tls_row_idx = self.proxymodel.mapToSource(row_idx)
-
-        self.model.setData(tls_row_idx, not self.model.checkStateBool(tls_row_idx), role=Qt.CheckStateRole)
+        self._toggle_selected_check_states()
 
 
 
@@ -238,10 +244,26 @@ class QGlobalsTable(QWidget):
         layout.addWidget(self.table)
         layout.addWidget(self.filteredit)
         self.push_button = QPushButton("Push")
-        self.push_button.clicked.connect(self.table.push)
+        self.push_button.clicked.connect(self._push_selected)
         layout.addWidget(self.push_button)
         self.setContentsMargins(0, 0, 0, 0)
         self.setLayout(layout)
+
+    def _push_selected(self):
+        original_text = self.push_button.text()
+        app = QApplication.instance()
+        self.push_button.setText("Pushing...")
+        self.push_button.setEnabled(False)
+        if app:
+            app.processEvents()
+        try:
+            self.table._run_with_busy_cursor(self.table.push)
+        finally:
+            self.checkbox.setChecked(False)
+            self.push_button.setText(original_text)
+            self.push_button.setEnabled(True)
+            if app:
+                app.processEvents()
 
     def update_table(self):
         self.table.update_table()

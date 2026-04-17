@@ -6,6 +6,8 @@ from libbs.plugin_installer import LibBSPluginInstaller, PluginInstaller
 
 
 class BinSyncInstaller(LibBSPluginInstaller):
+    BINJA_SOURCE_ROOT_FILENAME = "binsync_source_root.txt"
+
     def __init__(self):
         super().__init__(targets=PluginInstaller.DECOMPILERS)
         pkg_files = self.find_pkg_files("binsync")
@@ -31,6 +33,11 @@ class BinSyncInstaller(LibBSPluginInstaller):
         src = self.binsync_files / "binsync_plugin.py"
         dst = Path(path) / src.name
         self.link_or_copy(src, dst, symlink=True)
+
+    def _write_binja_source_root_file(self, plugin_dir):
+        source_root = self.binsync_files.parent.resolve()
+        source_root_file = plugin_dir / self.BINJA_SOURCE_ROOT_FILENAME
+        source_root_file.write_text(f"{source_root}\n", encoding="utf-8")
 
     def install_angr(self, path=None, interactive=True, force=False):
         if not force:
@@ -83,4 +90,5 @@ class BinSyncInstaller(LibBSPluginInstaller):
         self.link_or_copy(self.stub_files / "__init__.py", bs_binja_dir / "__init__.py", symlink=True)
         self.link_or_copy(self.stub_files / "plugin.json", bs_binja_dir / "plugin.json")
         self.link_or_copy(self.stub_files / "requirements.txt", bs_binja_dir / "requirements.txt")
+        self._write_binja_source_root_file(bs_binja_dir)
         return path

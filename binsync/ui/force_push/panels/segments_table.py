@@ -3,8 +3,9 @@ from typing import Dict, Set
 
 
 from binsync.controller import BSController
-from binsync.ui.panel_tabs.table_model import BinsyncTableModel, BinsyncTableFilterLineEdit, BinsyncTableView
+from .table_model import BinsyncTableModel, BinsyncTableFilterLineEdit, BinsyncTableView
 from libbs.ui.qt_objects import (
+    QApplication,
     QWidget,
     QVBoxLayout,
     Qt,
@@ -57,9 +58,34 @@ class SegmentTableModel(BinsyncTableModel):
         return None
 
     def setAllCheckStates(self, val):
-        for k,v in self.checks.items():
-            self.checks[k] = val
-        self.dataChanged.emit(self.index(0, 0), self.index(self.rowCount() - 1, 0))
+        changed_keys = [key for key, checked in self.checks.items() if checked != val]
+        for key in changed_keys:
+            self.checks[key] = val
+
+        if changed_keys and self.rowCount():
+            self.dataChanged.emit(self.index(0, 0), self.index(self.rowCount() - 1, 0), [Qt.CheckStateRole])
+
+    def setCheckStatesForIndexes(self, indexes, value):
+        changed_rows = []
+        seen_rows = set()
+        for index in indexes:
+            if not index.isValid() or index.row() in seen_rows:
+                continue
+
+            row = index.row()
+            seen_rows.add(row)
+            key = self.row_data[row][0]
+            if self.checks.get(key) == value:
+                continue
+
+            self.checks[key] = value
+            changed_rows.append(row)
+
+        if not changed_rows:
+            return False
+
+        self.dataChanged.emit(self.index(min(changed_rows), 0), self.index(max(changed_rows), 0), [Qt.CheckStateRole])
+        return True
 
     def setData(self, index, value, role=Qt.EditRole):
         if role != Qt.EditRole and role != Qt.CheckStateRole:
@@ -157,23 +183,11 @@ class SegmentTableView(BinsyncTableView):
         self.model.update_table()
 
     def push(self):
-        names_to_push = []
-        first_state_obj = self.model.checkState(
-            self.proxymodel.mapToSource(self.proxymodel.index(0, 0, QModelIndex()))
-        )
-        check_has_value = hasattr(first_state_obj, "value")
-
-        self.proxymodel.setFilterFixedString("")
-        for i in range(self.proxymodel.rowCount()):
-            proxyIndex = self.proxymodel.index(i, 0, QModelIndex())
-            mappedIndex = self.proxymodel.mapToSource(proxyIndex)
-            model_state = self.model.checkState(mappedIndex)
-            is_checked = model_state.value if check_has_value else model_state
-            if is_checked:
-                segment_name = self.model.data(mappedIndex)
-                names_to_push.append(segment_name)
+        checked_indexes = self._checked_source_indexes(check_column=0)
+        names_to_push = [self.model.data(mapped_index) for mapped_index in checked_indexes]
 
         self.controller.force_push_segments(names_to_push)
+        self._clear_checked_source_indexes(checked_indexes)
 
     def check_all(self):
         self.model.setAllCheckStates(True)
@@ -182,13 +196,7 @@ class SegmentTableView(BinsyncTableView):
         self.model.setAllCheckStates(False)
 
     def _doubleclick_handler(self):
-        """ Handler for double clicking on a row, toggles selection. """
-        if self.model.addr_col is None:
-            return
-        row_idx = self.selectionModel().selectedIndexes()[0]
-        tls_row_idx = self.proxymodel.mapToSource(row_idx)
-
-        self.model.setData(tls_row_idx, not self.model.checkStateBool(tls_row_idx), role=Qt.CheckStateRole)
+        self._toggle_selected_check_states()
 
 
 class QSegmentTable(QWidget):
@@ -219,10 +227,26 @@ class QSegmentTable(QWidget):
         layout.addWidget(self.table)
         layout.addWidget(self.filteredit)
         self.push_button = QPushButton("Push")
-        self.push_button.clicked.connect(self.table.push)
+        self.push_button.clicked.connect(self._push_selected)
         layout.addWidget(self.push_button)
         self.setContentsMargins(0, 0, 0, 0)
         self.setLayout(layout)
+
+    def _push_selected(self):
+        original_text = self.push_button.text()
+        app = QApplication.instance()
+        self.push_button.setText("Pushing...")
+        self.push_button.setEnabled(False)
+        if app:
+            app.processEvents()
+        try:
+            self.table._run_with_busy_cursor(self.table.push)
+        finally:
+            self.checkbox.setChecked(False)
+            self.push_button.setText(original_text)
+            self.push_button.setEnabled(True)
+            if app:
+                app.processEvents()
 
     def update_table(self):
         self.table.update_table()

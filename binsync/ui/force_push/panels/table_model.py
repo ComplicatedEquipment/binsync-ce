@@ -6,6 +6,7 @@ from binsync.controller import BSController
 from libbs.ui.qt_objects import (
     QAbstractItemView,
     QAbstractTableModel,
+    QApplication,
     QHeaderView,
     Qt,
     QModelIndex,
@@ -16,6 +17,7 @@ from libbs.ui.qt_objects import (
     QLineEdit,
     QTableView,
     QFontDatabase,
+    QCursor,
     Signal,
     Slot,
 )
@@ -275,6 +277,95 @@ class BinsyncTableView(QTableView):
         row = self.model.row_data[tls_row_idx.row()]
         self.controller.deci.gui_goto(row[self.model.addr_col])
 
+    def _selected_source_rows(self):
+        if self.selectionModel() is None:
+            return []
+
+        selected_rows = self.selectionModel().selectedRows()
+        if not selected_rows:
+            selected_rows = [index for index in self.selectionModel().selectedIndexes() if index.column() == 0]
+
+        unique_rows = []
+        seen_rows = set()
+        for proxy_index in selected_rows:
+            source_index = self.proxymodel.mapToSource(proxy_index)
+            if not source_index.isValid() or source_index.row() in seen_rows:
+                continue
+
+            seen_rows.add(source_index.row())
+            unique_rows.append(source_index)
+
+        return unique_rows
+
+    def _toggle_selected_check_states(self):
+        source_rows = self._selected_source_rows()
+        if not source_rows or not hasattr(self.model, "checkStateBool"):
+            return False
+
+        first_row = source_rows[0]
+        target_state = not self.model.checkStateBool(first_row)
+        return self._set_check_states_for_source_indexes(source_rows, target_state)
+
+    def _checked_source_indexes(self, check_column=0):
+        checked_indexes = []
+
+        for row_idx in range(self.model.rowCount()):
+            source_index = self.model.index(row_idx, check_column, QModelIndex())
+            model_state = self.model.checkState(source_index)
+            is_checked = model_state.value if hasattr(model_state, "value") else model_state
+            if is_checked:
+                checked_indexes.append(source_index)
+
+        return checked_indexes
+
+    def _clear_checked_source_indexes(self, source_indexes):
+        return self._set_check_states_for_source_indexes(source_indexes, False)
+
+    def _set_check_states_for_source_indexes(self, source_indexes, value):
+        if not source_indexes:
+            return False
+
+        if hasattr(self.model, "setCheckStatesForIndexes"):
+            self.setUpdatesEnabled(False)
+            try:
+                changed = self.model.setCheckStatesForIndexes(source_indexes, value)
+            finally:
+                self.setUpdatesEnabled(True)
+                self.viewport().update()
+
+            return changed
+
+        changed = False
+        for source_index in source_indexes:
+            changed |= self.model.setData(source_index, value, role=Qt.CheckStateRole)
+
+        return changed
+
+    def _run_with_busy_cursor(self, callback):
+        app = QApplication.instance()
+        if app is None:
+            return callback()
+
+        QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
+        app.processEvents()
+        try:
+            return callback()
+        finally:
+            QApplication.restoreOverrideCursor()
+            app.processEvents()
+
+    def mousePressEvent(self, event) -> None:
+        clicked_index = self.indexAt(event.pos())
+        if clicked_index.isValid() and clicked_index.column() == 0:
+            source_rows = self._selected_source_rows()
+            source_index = self.proxymodel.mapToSource(clicked_index)
+            if len(source_rows) > 1 and any(row.row() == source_index.row() for row in source_rows):
+                if self._toggle_selected_check_states():
+                    event.accept()
+                    return
+
+        super().mousePressEvent(event)
+
     def _col_hide_handler(self, index):
         """ Helper function to hide/show columns from context menu """
         self.column_visibility[index] = not self.column_visibility[index]
@@ -310,7 +401,7 @@ class BinsyncTableView(QTableView):
         self.setFont(fixed_width_font)
 
         self.setSortingEnabled(True)
-        self.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.setEditTriggers(QAbstractItemView.NoEditTriggers)
 
@@ -325,3 +416,11 @@ class BinsyncTableView(QTableView):
     def handle_filteredit_change(self, text):
         """ Handle text changes in the filter box, filters the table by the arg. """
         self.proxymodel.setFilterFixedString(text)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() in (Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter):
+            if self._toggle_selected_check_states():
+                event.accept()
+                return
+
+        super().keyPressEvent(event)
