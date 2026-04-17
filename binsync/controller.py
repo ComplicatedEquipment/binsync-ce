@@ -1100,8 +1100,6 @@ class BSController:
             _l.warning("Ignored force push, no function selected")
             return
 
-        master_state: State = self.client.master_state
-        committed = 0
         progress_str = "Decompiling functions to push..." if use_decompilation else "Collecting functions..."
 
         funcs = []
@@ -1114,20 +1112,33 @@ class BSController:
 
                 funcs.append(f)
         else:
-            # no progress bar needed!
-            _func_addrs = set(func_addrs)
-            for addr, func in self.deci.functions.items():
-                if addr in _func_addrs:
-                    funcs.append(func)
+            for func_addr in func_addrs:
+                try:
+                    f = self.deci.functions[func_addr]
+                except KeyError:
+                    _l.warning("Failed to force push function @ %s", func_addr)
+                    continue
 
-        for func in funcs:
-            master_state.set_function(func)
-        committed += len(funcs)
+                if not f:
+                    _l.warning("Failed to force push function @ %s", func_addr)
+                    continue
 
-        # commit the master state back!
-        master_state.last_commit_msg = f"Force pushed {committed} functions"
-        self.client.master_state = master_state
-        self.deci.info(f"Function force push successful: committed {committed} functions.")
+                funcs.append(f)
+
+        def _apply_force_push(master_state: State):
+            changed = 0
+            for func in funcs:
+                changed += bool(master_state.set_function(func))
+
+            if changed:
+                master_state.last_commit_msg = f"Force pushed {changed} functions"
+
+            return changed
+
+        changed = self.client.mutate_master_state(_apply_force_push) or 0
+        self.deci.info(
+            f"Function force push finished: selected {len(funcs)} functions, committed {changed} changes."
+        )
 
     @init_checker
     def force_push_global_artifacts(self, lookup_items: List):
@@ -1148,8 +1159,7 @@ class BSController:
 
             return str(name_obj)
 
-        master_state: State = self.client.master_state
-        committed = 0
+        artifacts_to_commit = []
         for lookup_item in lookup_items:
             artifact_type = None
             lookup_key = lookup_item
@@ -1158,21 +1168,21 @@ class BSController:
 
             if artifact_type == "Variable" or isinstance(lookup_key, int):
                 art = self.deci.global_vars[lookup_key]
-                master_state.set_global_var(art)
+                artifacts_to_commit.append(("Variable", art))
             elif artifact_type == "Struct":
                 art = self.deci._get_struct(lookup_key)
                 if art is None:
                     raise KeyError(lookup_key)
 
                 art.name = _normalize_type_name(art.name)
-                master_state.set_struct(art)
+                artifacts_to_commit.append(("Struct", art))
             elif artifact_type == "Enum":
                 art = self.deci._get_enum(lookup_key)
                 if art is None:
                     raise KeyError(lookup_key)
 
                 art.name = _normalize_type_name(art.name)
-                master_state.set_enum(art)
+                artifacts_to_commit.append(("Enum", art))
             elif artifact_type == "Typedef":
                 art = self.deci._get_typedef(lookup_key)
                 if art is None:
@@ -1180,26 +1190,43 @@ class BSController:
 
                 art.name = _normalize_type_name(art.name)
                 art.type = _normalize_type_name(art.type)
-                master_state.set_typedef(art)
+                artifacts_to_commit.append(("Typedef", art))
             else:
                 art = None
                 # legacy path for older callers without explicit type information
                 try:
                     art = self.deci.structs[lookup_key]
-                    master_state.structs[lookup_key] = art
+                    artifacts_to_commit.append(("Struct", art))
                 except KeyError:
                     pass
 
                 if art is None:
                     try:
-                        master_state.enums[lookup_key] = self.deci.enums[lookup_key]
+                        artifacts_to_commit.append(("Enum", self.deci.enums[lookup_key]))
                     except KeyError:
-                        master_state.typedefs[lookup_key] = self.deci.typedefs[lookup_key]
-            committed += 1
+                        artifacts_to_commit.append(("Typedef", self.deci.typedefs[lookup_key]))
 
-        master_state.last_commit_msg = f"Force pushed {committed} global artifacts"
-        self.client.master_state = master_state
-        self.deci.info(f"Globals force push successful: committed {committed} artifacts.")
+        def _apply_force_push(master_state: State):
+            changed = 0
+            for artifact_type, art in artifacts_to_commit:
+                if artifact_type == "Variable":
+                    changed += bool(master_state.set_global_var(art))
+                elif artifact_type == "Struct":
+                    changed += bool(master_state.set_struct(art))
+                elif artifact_type == "Enum":
+                    changed += bool(master_state.set_enum(art))
+                elif artifact_type == "Typedef":
+                    changed += bool(master_state.set_typedef(art))
+
+            if changed:
+                master_state.last_commit_msg = f"Force pushed {changed} global artifacts"
+
+            return changed
+
+        changed = self.client.mutate_master_state(_apply_force_push) or 0
+        self.deci.info(
+            f"Globals force push finished: selected {len(artifacts_to_commit)} artifacts, committed {changed} changes."
+        )
 
     @init_checker
     def force_push_segments(self, segment_names: List[int]):
@@ -1214,23 +1241,31 @@ class BSController:
             _l.warning("Ignored segments force push, no segments selected")
             return
 
-        master_state: State = self.client.master_state
-        committed = 0
-        
+        segments_to_commit = []
         for segment_name in segment_names:
             try:
                 segment = self.deci.segments[segment_name]
                 if segment:
-                    master_state.set_segment(segment)
-                    committed += 1
+                    segments_to_commit.append(segment)
                 else:
                     _l.warning("Failed to force push segment @ %s", segment_name)
             except KeyError:
                 _l.warning("Segment at %s not found in decompiler", segment_name)
 
-        master_state.last_commit_msg = f"Force pushed {committed} segments"
-        self.client.master_state = master_state
-        self.deci.info(f"Segments force push successful: committed {committed} segments.")
+        def _apply_force_push(master_state: State):
+            changed = 0
+            for segment in segments_to_commit:
+                changed += bool(master_state.set_segment(segment))
+
+            if changed:
+                master_state.last_commit_msg = f"Force pushed {changed} segments"
+
+            return changed
+
+        changed = self.client.mutate_master_state(_apply_force_push) or 0
+        self.deci.info(
+            f"Segments force push finished: selected {len(segments_to_commit)} segments, committed {changed} changes."
+        )
 
     #
     # Utils

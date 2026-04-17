@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import datetime
 from functools import wraps
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 from pathlib import Path
 import tempfile
 
@@ -375,6 +375,27 @@ class Client:
     @master_state.setter
     def master_state(self, state):
         self.cache.set_state(state, user=self.master_user)
+
+    def mutate_master_state(self, mutator: Callable[[State], int | bool | None]):
+        """
+        Mutate the live cached master state in place and queue exactly one snapshot
+        copy only when the mutator reports a change.
+
+        This avoids the usual force-push pattern of:
+        1. copying the whole master state on read
+        2. mutating that copy
+        3. copying the whole state again on write
+        """
+        with self.cache.master_state_lock:
+            state = self.cache._master_state
+            if state is None:
+                return None
+
+            changed = mutator(state)
+            if changed:
+                self.cache.queued_master_state_changes.put_nowait(state.copy())
+
+            return changed
 
     @property
     def last_push_ts(self):
